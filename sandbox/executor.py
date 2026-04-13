@@ -1,9 +1,11 @@
 """Sandboxed code execution. Runs code in a subprocess with a timeout.
 
 No import restrictions — the 5-second timeout is the safety boundary.
-If code produces no output or errors, returns a default error message.
+Jupyter-style auto-display: if the last statement is a bare expression,
+it gets wrapped in print() so the model doesn't need explicit print().
 """
 
+import ast
 import json
 import re
 import subprocess
@@ -22,10 +24,12 @@ _SEARCH_PLACEHOLDER = textwrap.dedent("""\
 
 def _build_search_func(search_results: dict[str, str]) -> str:
     """Build a search() function that returns pre-resolved results."""
-    results_json = json.dumps(search_results)
+    import base64
+    results_json = json.dumps(search_results, ensure_ascii=True)
+    encoded = base64.b64encode(results_json.encode()).decode()
     return textwrap.dedent(f"""\
-        import json as _json
-        _SEARCH_RESULTS = _json.loads('''{results_json}''')
+        import json as _json, base64 as _b64
+        _SEARCH_RESULTS = _json.loads(_b64.b64decode("{encoded}").decode())
         def search(query):
             return _SEARCH_RESULTS.get(query, "No results found for: " + query)
     """)
@@ -46,6 +50,30 @@ def extract_search_query_strings(code: str) -> list[str]:
     return queries
 
 
+def _auto_display(code: str) -> str:
+    """Jupyter-style auto-display: wrap last bare expression in print()."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return code
+    if not tree.body:
+        return code
+    last = tree.body[-1]
+    if not isinstance(last, ast.Expr):
+        return code
+    # Skip if already a print() call
+    if (isinstance(last.value, ast.Call)
+            and isinstance(last.value.func, ast.Name)
+            and last.value.func.id == "print"):
+        return code
+    lines = code.split("\n")
+    start = last.lineno - 1
+    end = last.end_lineno
+    expr_text = "\n".join(lines[start:end]).strip()
+    lines[start:end] = [f"print({expr_text})"]
+    return "\n".join(lines)
+
+
 def execute_code(
     code: str,
     search_enabled: bool = False,
@@ -59,6 +87,8 @@ def execute_code(
     """
     if not code.strip():
         return ""
+
+    code = _auto_display(code)
 
     script = ""
     if search_results:

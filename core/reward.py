@@ -1,3 +1,4 @@
+import math
 import re
 import string
 
@@ -19,11 +20,12 @@ def normalize_number(text: str) -> str | None:
     text = text.strip().replace(",", "").replace("$", "").replace("%", "")
     try:
         val = float(text)
-        # Return integer form if it's a whole number
+        if not math.isfinite(val):
+            return None
         if val == int(val):
             return str(int(val))
         return str(val)
-    except ValueError:
+    except (ValueError, OverflowError):
         return None
 
 

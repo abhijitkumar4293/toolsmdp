@@ -1,4 +1,4 @@
-from sandbox.executor import execute_code
+from sandbox.executor import execute_code, _auto_display
 
 
 class TestExecuteCode:
@@ -96,3 +96,58 @@ class TestExecuteCode:
     def test_float_precision(self):
         result = execute_code("print(0.15 * 3.05e12)")
         assert "457500000000" in result
+
+
+class TestAutoDisplay:
+    """Jupyter-style auto-display: bare last expressions get wrapped in print()."""
+
+    def test_bare_variable(self):
+        assert execute_code("x = 42\nx") == "42"
+
+    def test_bare_arithmetic(self):
+        assert execute_code("12 * (50 / 60)") == "10.0"
+
+    def test_multi_line_bare_expr(self):
+        assert execute_code("x = 48\ny = x / 2\nx + y") == "72.0"
+
+    def test_assignment_not_displayed(self):
+        """Last statement is assignment — no auto-display, still 'no output'."""
+        result = execute_code("x = 42")
+        assert "no output" in result.lower()
+
+    def test_print_not_double_wrapped(self):
+        """Already has print() — don't wrap again."""
+        assert execute_code("print(42)") == "42"
+
+    def test_search_bare_call(self):
+        """search() without print() should auto-display."""
+        result = execute_code(
+            "search('capital of France')",
+            search_enabled=True,
+            search_results={"capital of France": "Paris is the capital."},
+        )
+        assert "Paris" in result
+
+    def test_tuple_expression(self):
+        assert execute_code("x = 1\ny = 2\n(x, y)") == "(1, 2)"
+
+    def test_string_expression(self):
+        assert execute_code("'hello' + ' world'") == "hello world"
+
+    def test_syntax_error_passthrough(self):
+        """Broken code should pass through unchanged (and error at execution)."""
+        result = execute_code("def f(:\nx")
+        assert result.startswith("ERROR:")
+
+    def test_for_loop_not_touched(self):
+        """Last statement is a for loop — not an Expr, no auto-display."""
+        result = execute_code("for i in range(3):\n    pass")
+        assert "no output" in result.lower()
+
+    def test_comment_only_lines_ignored(self):
+        """Comments after the last expression shouldn't break anything."""
+        code = "x = 5\nx + 3\n# this is a comment"
+        # Comment is not a valid ast.Expr, but ast ignores it.
+        # The last AST node is still x + 3
+        assert _auto_display(code) == "x = 5\nprint(x + 3)\n# this is a comment"
+

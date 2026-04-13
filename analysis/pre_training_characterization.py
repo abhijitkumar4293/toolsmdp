@@ -20,6 +20,7 @@ Usage:
 import argparse
 import json
 import logging
+import re
 import time
 from pathlib import Path
 
@@ -40,37 +41,42 @@ SYSTEM_PROMPT = """\
 You are a helpful assistant that solves problems step by step.
 
 ## Tools
-You have access to a Python interpreter for computation and information retrieval. Write code in a fenced block:
+You have access to a Python interpreter. Write code in a fenced block:
 
 ```python
 your code here
 ```
 
-The code will be executed and you will see its printed output. Use code blocks ONLY when you need to:
-- Compute something you cannot do reliably in your head (arithmetic, logic, data processing)
-- Search for information you do not already know using search(query)
-
-Do NOT write code for things you already know the answer to.
+The code runs in a subprocess — only printed output is captured. Rules:
+- You MUST use print() to see any result. Bare expressions like `x` produce no output.
+- Variables persist across code blocks in the same conversation.
+- Use code ONLY when you need to compute or look up something you don't know.
+- Do NOT write code for things you already know.
 
 ## <context> block
-After a code block executes and you see the tool output, write a <context> block to extract the key information relevant to answering the question. Only use <context> blocks immediately after tool output. For example:
+After EVERY tool output, you MUST immediately write a <context> block extracting the key fact needed to answer the question. Keep it short — one or two sentences maximum. Example:
 
-Tool output: "Paris is the capital of France. It has a population of 2.1 million in the city proper and 12.4 million in the metro area..."
-<context>Paris population: 2.1 million (city), 12.4 million (metro)</context>
+[TOOL OUTPUT]
+The Oberoi Group is a hotel group with its head office in Delhi...
+<context>Oberoi Group head office: Delhi</context>
+
+Do NOT skip this step. The <context> block is required after every tool output.
 
 ## <answer> block
-When you have the final answer, write ONLY the answer inside an answer block with no extra words:
+When you have the final answer, write it inside an answer block with no extra words:
 <answer>42</answer>
 <answer>William Shakespeare</answer>
 <answer>Paris</answer>
 """
 
 SEARCH_PROMPT_ADDITION = """
-A search() function is available. Call it with a query string to retrieve relevant passages:
+## search() function
+A search() function retrieves Wikipedia passages. Always print the result:
 ```python
 results = search("your query here")
 print(results)
 ```
+search() returns a formatted string — do NOT index into it with [0]['key']. Just print it and read the output.
 """
 
 log = logging.getLogger(__name__)
@@ -159,55 +165,108 @@ def process_dataset(llm, tokenizer, data_path: Path, output_dir: Path,
     log.info("Dataset: %s | N: %d | Rollouts: %d | Wavefront batch size: %d",
              dataset, len(examples), num_rollouts, len(examples) * num_rollouts)
 
-    params = SamplingParams(
+    # invoke: stop at closing code fence so model can't hallucinate tool output
+    invoke_params = SamplingParams(
         temperature=0.7, top_p=0.9, max_tokens=MAX_TOKENS_PER_SEGMENT,
+        stop=["```\n", "```\r\n"],
+        include_stop_str_in_output=True,
+    )
+    # assimilate: stop at </context> so we capture exactly the distillation
+    assimilate_params = SamplingParams(
+        temperature=0.7, top_p=0.9, max_tokens=256,
+        stop=["</context>"],
+        include_stop_str_in_output=True,
     )
 
     # Initialize state for every (question, rollout) pair
     # Each state is identified by (example_idx, rollout_idx)
+    #
+    # context accumulates the full conversation: question + all generated text so far.
+    # After each tool call, we append "[TOOL OUTPUT]\n{stdout}\n" and let the model
+    # continue — first to write <context>...</context> (assimilate), then to either
+    # call another tool (invoke) or give a final answer (synthesize).
     states = {}
     for ex_idx, ex in enumerate(examples):
         for r_idx in range(num_rollouts):
             key = (ex_idx, r_idx)
             states[key] = {
                 "question": ex["question"],
-                "context": ex["question"],
+                "context": ex["question"],   # grows with every wave
                 "segments": [],
                 "tool_types": [],
                 "tool_outputs": [],
                 "full_generated": "",
                 "done": False,
                 "tool_call_count": 0,
+                "pending_tool_stdout": None, # set after invoke, cleared after assimilate
             }
 
     t0 = time.time()
 
-    for wave in range(MAX_TOOL_CALLS):
+    # Each wave is one generation step. Rollouts in "assimilate" mode get their
+    # context ended with the raw tool output so the model writes <context>.
+    # Rollouts in "invoke" mode get the full accumulated context so far.
+    MAX_WAVES = MAX_TOOL_CALLS * 2 + 1  # invoke + assimilate per tool call, plus final synthesize
+    for wave in range(MAX_WAVES):
         active_keys = [k for k, s in states.items() if not s["done"]]
         if not active_keys:
             break
 
         log.info("Wave %d: %d active rollouts", wave, len(active_keys))
 
-        # Build prompts for all active rollouts
-        prompts = [build_prompt(tokenizer, states[k]["context"], search_enabled)
-                   for k in active_keys]
+        # Split active rollouts into assimilate (pending tool output) vs invoke/synthesize
+        assimilate_keys = [k for k in active_keys if states[k]["pending_tool_stdout"] is not None]
+        invoke_keys = [k for k in active_keys if states[k]["pending_tool_stdout"] is None]
 
-        # Single batched vLLM call for ALL active rollouts
-        outputs = llm.generate(prompts, params)
+        outputs_by_key = {}
+        if assimilate_keys:
+            prompts = [build_prompt(tokenizer, states[k]["context"], search_enabled)
+                       for k in assimilate_keys]
+            for key, out in zip(assimilate_keys, llm.generate(prompts, assimilate_params)):
+                outputs_by_key[key] = out.outputs[0].text
+        if invoke_keys:
+            prompts = [build_prompt(tokenizer, states[k]["context"], search_enabled)
+                       for k in invoke_keys]
+            for key, out in zip(invoke_keys, llm.generate(prompts, invoke_params)):
+                outputs_by_key[key] = out.outputs[0].text
 
-        # Process each output
-        for batch_idx, key in enumerate(active_keys):
+        for key in active_keys:
             state = states[key]
-            generated = outputs[batch_idx].outputs[0].text
+            generated = outputs_by_key[key]
             state["full_generated"] += generated
 
+            # ── Assimilate wave: model should write <context>...</context> ──
+            if state["pending_tool_stdout"] is not None:
+                stdout = state["pending_tool_stdout"]
+                state["pending_tool_stdout"] = None
+
+                # Extract <context> block if present
+                m = re.search(r"<context>(.*?)</context>", generated, re.DOTALL | re.IGNORECASE)
+                if m:
+                    context_text = m.group(1).strip()
+                    termination = "context_block"
+                else:
+                    # Model skipped <context> — treat its text as the distillation
+                    context_text = generated.strip()[:256]
+                    termination = "eos"
+
+                state["segments"].append({
+                    "type": "assimilate",
+                    "termination": termination,
+                    "raw_stdout": stdout,
+                    "context_text": context_text,
+                })
+                # Append the assimilation text then continue to next wave
+                state["context"] = state["context"] + generated
+                continue
+
+            # ── Invoke / synthesize wave ──
             code_detection = detect_code_block(generated)
 
             if code_detection is None:
-                # No code block — rollout finished
+                # No code block — synthesize, rollout done
                 state["segments"].append({"type": "synthesize", "termination": "eos"})
-                state["context"] = state["context"] + "\n" + generated
+                state["context"] = state["context"] + generated
                 state["done"] = True
                 continue
 
@@ -233,9 +292,13 @@ def process_dataset(llm, tokenizer, data_path: Path, output_dir: Path,
                 "tool_type": tt, "code": code_detection.executable, "output": stdout,
             })
 
-            state["context"] = state["question"] + "\n\n" + replaced
+            # Append generated text (with code replaced by stdout) to context,
+            # then append the raw tool output banner so the model sees it and
+            # writes <context> in the next (assimilate) wave.
+            state["context"] = state["context"] + replaced + f"\n[TOOL OUTPUT]\n{stdout}\n"
             state["full_generated"] += f"\n[TOOL OUTPUT]\n{stdout}\n"
             state["tool_call_count"] += 1
+            state["pending_tool_stdout"] = stdout  # triggers assimilate wave next
 
             if state["tool_call_count"] >= MAX_TOOL_CALLS:
                 state["segments"][-1]["termination"] = "truncated"
@@ -266,6 +329,7 @@ def process_dataset(llm, tokenizer, data_path: Path, output_dir: Path,
                 "prediction": pred,
                 "full_generated": s["full_generated"],
                 "final_context": s["context"],
+                "segments": s["segments"],
             })
 
         avg_tool_calls = sum(r["num_tool_calls"] for r in rollouts) / num_rollouts
