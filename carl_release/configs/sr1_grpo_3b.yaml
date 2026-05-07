@@ -1,0 +1,23 @@
+# Search-R1 GRPO @ 3B baseline.
+algorithm: grpo
+data:
+  train_files: $DATA_ROOT/sr1/train.jsonl
+  val_files:   $DATA_ROOT/sr1/dev.jsonl
+  train_batch_size: 256
+  max_prompt_length: 2048
+  max_response_length: 2048
+actor_rollout_ref:
+  model: { path: Qwen/Qwen2.5-3B-Instruct }
+  rollout: { name: vllm, n: 5, temperature: 1.0, top_p: 1.0, top_k: -1 }
+  actor:
+    optim: { lr: 1.0e-6 }
+    ppo_mini_batch_size: 64
+    ppo_epochs: 4
+    use_kl_loss: true
+    kl_loss_coef: 0.001
+    clip_ratio: 0.2
+trainer:
+  total_episodes: 500
+  test_freq: 25
+algorithm_config:
+  gamma: 1.0

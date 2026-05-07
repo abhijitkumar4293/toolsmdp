@@ -1,0 +1,44 @@
+# Pre-built vLLM for ROCm MI300X (includes PyTorch + vLLM)
+FROM rocm/vllm:rocm6.3.1_mi300_ubuntu22.04_py3.12_vllm_0.6.6
+
+WORKDIR /workspace
+
+# Java 21 for Pyserini
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    wget apt-transport-https gnupg \
+    && wget -O - https://packages.adoptium.net/artifactory/api/gpg/key/public | apt-key add - \
+    && echo "deb https://packages.adoptium.net/artifactory/deb $(. /etc/os-release && echo $VERSION_CODENAME) main" \
+        > /etc/apt/sources.list.d/adoptium.list \
+    && apt-get update && apt-get install -y --no-install-recommends temurin-21-jdk \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV JAVA_HOME=/usr/lib/jvm/temurin-21-jdk-amd64
+
+# blinker installed via distutils blocks pip upgrades; force-reinstall.
+RUN pip install --ignore-installed blinker
+
+# torch, vllm, torchvision already in the base image; do not reinstall.
+RUN pip install --no-cache-dir \
+    datasets \
+    "transformers>=4.51,<5" \
+    tokenizers \
+    accelerate \
+    "numpy<2" \
+    pyyaml \
+    pyserini \
+    faiss-cpu
+
+# Pre-download Wikipedia BM25 (DPR-100w) index into the path Pyserini
+# expects at runtime. ~9.2 GB.
+RUN mkdir -p /root/.cache/pyserini/indexes && \
+    wget -q -O /tmp/wiki-index.tar.gz \
+        https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene-index.wikipedia-dpr-100w.20210120.d1b9e6.tar.gz && \
+    tar -xzf /tmp/wiki-index.tar.gz -C /root/.cache/pyserini/indexes/ && \
+    rm /tmp/wiki-index.tar.gz
+
+# Build-time sanity checks.
+RUN python -c "from vllm import LLM, SamplingParams; print('vLLM OK')"
+RUN python -c "from transformers import AutoTokenizer; print('transformers OK')"
+RUN python -c "import torch; print(f'torch={torch.__version__}, rocm={torch.version.hip}')"
+
+CMD ["bash"]

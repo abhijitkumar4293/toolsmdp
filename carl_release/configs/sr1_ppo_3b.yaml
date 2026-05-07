@@ -1,0 +1,39 @@
+# Search-R1 PPO @ 3B baseline. Run upstream verl with this.
+algorithm: ppo
+data:
+  train_files: $DATA_ROOT/sr1/train.jsonl
+  val_files:   $DATA_ROOT/sr1/dev.jsonl
+  train_batch_size: 256
+  max_prompt_length: 2048
+  max_response_length: 2048
+actor_rollout_ref:
+  model:
+    path: Qwen/Qwen2.5-3B-Instruct
+  rollout:
+    name: vllm
+    n: 5
+    temperature: 1.0
+    top_p: 1.0
+    top_k: -1
+  actor:
+    optim: { lr: 1.0e-6 }
+    ppo_mini_batch_size: 64
+    ppo_micro_batch_size_per_gpu: 2
+    ppo_epochs: 4
+    use_kl_loss: true
+    kl_loss_coef: 0.001
+    clip_ratio: 0.2
+critic:
+  model:
+    path: Qwen/Qwen2.5-3B-Instruct
+  optim: { lr: 1.0e-5 }
+  warmup_pairs: $DATA_ROOT/sr1/warmup.jsonl   # produced by carl.baselines.search_r1.warmup_data
+trainer:
+  total_episodes: 500
+  test_freq: 25
+  total_epochs: 1
+algorithm_config:
+  gamma: 1.0
+  lam: 0.95
+  use_kl_loss: true
+  kl_estimator: low_var_kl

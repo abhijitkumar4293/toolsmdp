@@ -1,0 +1,35 @@
+FROM nvidia/cuda:12.4.0-devel-ubuntu22.04
+
+WORKDIR /workspace
+
+# Java 21 for Pyserini
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    wget apt-transport-https gnupg python3 python3-pip \
+    && wget -O - https://packages.adoptium.net/artifactory/api/gpg/key/public | apt-key add - \
+    && echo "deb https://packages.adoptium.net/artifactory/deb $(. /etc/os-release && echo $VERSION_CODENAME) main" \
+        > /etc/apt/sources.list.d/adoptium.list \
+    && apt-get update && apt-get install -y --no-install-recommends temurin-21-jdk \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/python3 /usr/bin/python
+
+ENV JAVA_HOME=/usr/lib/jvm/temurin-21-jdk-amd64
+
+# PyTorch + Python deps
+RUN pip install --no-cache-dir \
+    torch \
+    datasets \
+    "transformers>=4.51" \
+    tokenizers \
+    accelerate \
+    numpy \
+    pyyaml \
+    pyserini \
+    faiss-cpu
+
+# vLLM for CUDA
+RUN pip install --no-cache-dir vllm
+
+# Pre-download Wikipedia BM25 (DPR-100w) index into Pyserini's cache.
+RUN python -c "from pyserini.search.lucene import LuceneSearcher; LuceneSearcher.from_prebuilt_index('wikipedia-dpr-100w')"
+
+CMD ["bash"]

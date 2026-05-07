@@ -1,0 +1,38 @@
+# aml.yaml — AML/Singularity job config for toolsmdp
+subscription_id: "88293e71-8698-4ed0-9b0c-19d2b9b67544"
+resource_group: "bingdmml"
+workspace_name: "bingdmml"
+
+compute:
+  virtual_cluster: "/subscriptions/07c3f5a2-0880-4a37-b678-e29ade7b1036/resourceGroups/singularitystcabd/providers/Microsoft.MachineLearningServices/virtualclusters/webxtstcabd"
+  instance_type: "Singularity.ND24is_MI300X_v5"
+  sla_tier: "Premium"
+
+identity:
+  resource_id: "/subscriptions/88293e71-8698-4ed0-9b0c-19d2b9b67544/resourceGroups/bingdmml/providers/Microsoft.ManagedIdentity/userAssignedIdentities/UAI_BingDMML"
+  client_id: "37ec208a-d44d-4a10-bb4b-f567373cda57"
+
+environment_amd: "azureml:amd-inference:8"
+environment_nvidia: "azureml:nvidia-inference:2"
+
+code:
+  root: "."
+  ignore:
+    - ".git/"
+    - "__pycache__/"
+    - "*.pyc"
+    - ".env"
+    - "aml.yaml"
+    - "paper_draft/"
+    - "downloads/"
+    - "az/"
+    - "aml/"
+    - ".claude/"
+    - ".vscode/"
+    - ".devcontainer/"
+    - ".pytest_cache/"
+    - "*.egg-info/"
+
+defaults:
+  experiment_name: "infer-milestone-2"
+  shm_size: "2g"

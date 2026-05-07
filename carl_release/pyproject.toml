@@ -1,0 +1,27 @@
+[project]
+name = "carl"
+version = "0.1.0"
+description = "CARL: Competence-Aware Reinforcement Learning for LLM tool use (NeurIPS 2026 artifact)"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.1",
+    "transformers>=4.45",
+    "datasets>=2.18",
+    "numpy",
+    "pyyaml",
+    "pytest",
+]
+
+[project.optional-dependencies]
+retrieval = ["pyserini", "faiss-cpu"]
+training  = ["accelerate", "deepspeed", "vllm", "openrlhf>=0.4"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["carl*"]
+
+[tool.pytest.ini_options]
+markers = [
+    "smoke: minimal-resource end-to-end smoke tests",
+    "gpu: require a CUDA / ROCm GPU",
+]
